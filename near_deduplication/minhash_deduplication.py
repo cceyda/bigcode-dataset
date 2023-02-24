@@ -28,13 +28,13 @@ with warnings.catch_warnings():
     import datasets
     import numpy as np
     import typer
-    from datasets import load_dataset
+    from datasets import load_dataset,Dataset
     from scipy.integrate import quad as integrate
     from tqdm import tqdm
 
 
 SEED = 42
-NON_ALPHA = re.compile("[^A-Za-z_0-9]")
+NON_ALPHA = re.compile("[^가-힣A-Za-z_0-9]")
 RNG = np.random.RandomState(SEED)
 MAX_HASH = np.uint64((1 << 32) - 1)
 MERSENNE_PRIME = np.uint64((1 << 61) - 1)
@@ -59,7 +59,7 @@ def ngrams(sequence: List[str], n: int) -> Iterable:
     Iterable
         The n-grams generated from the sequence.
     """
-    if len(sequence) < n:
+    if len(sequence)<n:
         return sequence
     iterables = tee(sequence, n)
     for i, sub_iterable in enumerate(iterables):
@@ -210,7 +210,7 @@ if __name__ == "__main__":
         split: str = typer.Option("train", help="Dataset split"),
         data_dir: str = typer.Option(None, help="Dataset data directory"),
         revision: str = typer.Option("main", help="Dataset revision"),
-        column: str = typer.Option("content", help="Dataset column"),
+        column: str = typer.Option("name", help="Dataset column"),
         cache_dir: str = typer.Option(".cache", help="Cache directory"),
         ngram_size: int = typer.Option(5, help="The ngram size to use for MinHash"),
         num_perm: int = typer.Option(256, help="Number of permutations"),
@@ -218,10 +218,10 @@ if __name__ == "__main__":
         output: str = typer.Option(None, help="Store the deduplicated dataset"),
     ):
         global uf
-        OUTPUT_BASE = Path(output or "output")
+        OUTPUT_BASE = Path(output or "deduplicated")
         OUTPUT_BASE.mkdir(exist_ok=True, parents=True)
-        output = OUTPUT_BASE / "deduplicated"
-
+        output = OUTPUT_BASE / Path(dataset).name
+        logger.info(f"will save deduped:{output}")
         logging.basicConfig(level=logging.INFO)
 
         time_measures = {}
@@ -232,16 +232,18 @@ if __name__ == "__main__":
         HASH_TABLES = [defaultdict(set) for _ in range(B)]
 
         time_measures["load_dataset"] = time.time()
-        ds = load_dataset(
-            dataset,
-            config,
-            data_dir=data_dir,
-            split=split,
-            use_auth_token=True,
-            cache_dir=cache_dir,
-            revision=revision,
-            num_proc=os.cpu_count(),
-        )
+        # ds = load_dataset(
+        #     dataset,
+        #     config,
+        #     data_dir=data_dir,
+        #     split=split,
+        #     use_auth_token=True,
+        #     cache_dir=cache_dir,
+        #     revision=revision,
+        #     num_proc=os.cpu_count(),
+        # )
+        ds=Dataset.load_from_disk(dataset)
+    
         time_measures["load_dataset"] = time.time() - time_measures["load_dataset"]
         DATA_SIZE = len(ds)
         PERMUTATIONS = np.array(
@@ -311,11 +313,18 @@ if __name__ == "__main__":
             num_proc=os.cpu_count(),
             desc="Filtering clusters...",
         )
+        dupe_data = ds.filter(
+            function=lambda record, idx: record["__cluster__"] != idx,
+            with_indices=True,
+            num_proc=os.cpu_count(),
+            desc="Filtering dupe clusters...",
+        )
         time_measures["filtering"] = time.time() - time_measures["filtering"]
 
         time_measures["save"] = time.time()
-        final_data = final_data.remove_columns(["__cluster__"])
+        # final_data = final_data.remove_columns(["__cluster__"])
         final_data.save_to_disk(output)
+        dupe_data.save_to_disk(f"{output}_dupes")
         time_measures["save"] = time.time() - time_measures["save"]
 
         FINAL_DATA_SIZE = len(final_data)
